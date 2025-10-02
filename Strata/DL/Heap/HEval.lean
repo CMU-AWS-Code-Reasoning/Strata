@@ -149,13 +149,13 @@ partial def evalApp (state : HState) (originalExpr e1 e2 : HExpr) : HState × HE
     -- Third application to DynamicFieldAssign - now we can evaluate
     -- This handles obj[field] = value where field is dynamic
     evalDynamicFieldAssign state2 objExpr fieldExpr e2'
-  -- | .deferredOp "StringFieldAccess" _ =>
-    -- -- First application to StringFieldAccess - return partially applied
-    -- (state2, .app (.deferredOp "StringFieldAccess" none) e2')
-  -- | .app (.deferredOp "StringFieldAccess" _) objExpr =>
-    -- -- Second application to StringFieldAccess - return partially applied
-    -- -- This handles str.fieldName where fieldName is a string literal
-    -- evalStringFieldAccess state2 objExpr e2'
+  | .deferredOp "StringFieldAccess" _ =>
+    -- First application to StringFieldAccess - return partially applied
+    (state2, .app (.deferredOp "StringFieldAccess" none) e2')
+  | .app (.deferredOp "StringFieldAccess" _) objExpr =>
+    -- Second application to StringFieldAccess - return partially applied
+    -- This handles str.fieldName where fieldName is a string literal
+    evalStringFieldAccess state2 objExpr e2'
   | .deferredOp "LengthAccess" _ =>
     -- First application to LengthAccess - return partially applied
     (state2, .app (.deferredOp "LengthAccess" none) e2')
