@@ -225,6 +225,7 @@ partial def evalStringFieldAccess (state : HState) (objExpr fieldExpr : HExpr) :
     -- Field is not a string literal
     (state, .lambda (LExpr.const "error_non_literal_string_field" none))
 
+
 -- Handle length access for both strings and arrays
 partial def evalLengthAccess (state : HState) (objExpr fieldExpr : HExpr) : HState × HExpr :=
   match fieldExpr with
