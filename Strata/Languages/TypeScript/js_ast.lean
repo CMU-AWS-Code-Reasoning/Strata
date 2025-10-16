@@ -149,7 +149,7 @@ mutual
   deriving Repr, Lean.FromJson, Lean.ToJson
 
   structure TS_CallExpression extends BaseNode where
-    callee : TS_Identifier
+    callee : TS_Expression
     arguments : Array TS_Expression
   deriving Repr, Lean.FromJson, Lean.ToJson
 
@@ -170,6 +170,20 @@ mutual
     | TS_CallExpression: TS_CallExpression → TS_Expression
   deriving Repr, Lean.FromJson, Lean.ToJson
 end
+
+instance : Inhabited TS_Expression where
+  default := .TS_NumericLiteral {
+    value := 0,
+    extra := { rawValue := 0, raw := "0" },
+    type := "NumericLiteral",
+    start_loc := 0,
+    end_loc := 0,
+    loc := {
+      start_loc := { line := 0, column := 0, index := 0 },
+      end_loc := { line := 0, column := 0, index := 0 },
+      identifierName := none
+    }
+  }
 
 structure TS_VariableDeclarator extends BaseNode where
   id : TS_Identifier
