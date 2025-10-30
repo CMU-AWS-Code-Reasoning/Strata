@@ -223,9 +223,12 @@ partial def translate_expr (e: TS_Expression) : Heap.HExpr :=
             -- arr.shift() - deferred operation that removes first element and reindexes
             Heap.HExpr.app (Heap.HExpr.deferredOp "ArrayShift" none) objExpr
           | "unshift" =>
-            -- arr.unshift(value) - deferred operation that adds to beginning and reindexes
-            let valueExpr := translate_expr call.arguments[0]!
-            Heap.HExpr.app (Heap.HExpr.app (Heap.HExpr.deferredOp "ArrayUnshift" none) objExpr) valueExpr
+            -- arr.unshift(value) - single value only in expression context
+            if call.arguments.size != 1 then
+              panic! s!"unshift with multiple arguments in expression context not supported"
+            else
+              let valueExpr := translate_expr call.arguments[0]!
+              Heap.HExpr.app (Heap.HExpr.app (Heap.HExpr.deferredOp "ArrayUnshift" none) objExpr) valueExpr
           | methodName =>
             Heap.HExpr.lambda (.fvar s!"call_{methodName}" none)
         | _ =>
@@ -318,6 +321,35 @@ partial def translate_statement_core
                   let shiftExpr := Heap.HExpr.app (Heap.HExpr.deferredOp "ArrayShift" none) objExpr
                   let ty := infer_type_from_expr d.init
                   (ctx, [.cmd (.init d.id.name ty shiftExpr)])
+                else if methodId.name == "shift" then
+                   let objExpr := translate_expr member.object
+                   let shiftExpr := Heap.HExpr.app (Heap.HExpr.deferredOp "ArrayShift" none) objExpr
+                   let ty := infer_type_from_expr d.init
+                   (ctx, [.cmd (.init d.id.name ty shiftExpr)])
+                else if methodId.name == "unshift" then
+                  -- Handle Array.unshift() with multiple arguments
+                  let objExpr := translate_expr member.object
+                  let valueExprs := call.arguments.toList.map translate_expr
+                  if valueExprs.isEmpty then
+                    defaultInit
+                  else
+                    -- Process all unshifts in reverse order
+                    -- valueExprs = [2, 1], reverse = [1, 2]
+                    -- We want to execute: unshift(1), then unshift(2)
+                    let reversed := valueExprs.reverse
+                    let allButLast := reversed.dropLast
+                    let lastValue := reversed.getLast!
+
+                    let tempStmts := allButLast.map (fun valueExpr =>
+                      let unshiftExpr := Heap.HExpr.app (Heap.HExpr.app (Heap.HExpr.deferredOp "ArrayUnshift" none) objExpr) valueExpr
+                      (.cmd (.set "temp_unshift_result" unshiftExpr) : TSStrataStatement)
+                    )
+                    -- Last unshift assigns to the variable
+                    let lastUnshiftExpr := Heap.HExpr.app (Heap.HExpr.app (Heap.HExpr.deferredOp "ArrayUnshift" none) objExpr) lastValue
+                    let ty := Heap.HMonoTy.int
+                    let initStmt := .cmd (.init d.id.name ty lastUnshiftExpr)
+                    (ctx, tempStmts ++ [initStmt])
+
                 else
                   defaultInit
               | _ => defaultInit
@@ -358,10 +390,13 @@ partial def translate_statement_core
                 let shiftExpr := Heap.HExpr.app (Heap.HExpr.deferredOp "ArrayShift" none) objExpr
                 (ctx, [.cmd (.set "temp_shift_result" shiftExpr)])
               | "unshift" =>
-                -- arr.unshift(value) standalone
-                let valueExpr := translate_expr call.arguments[0]!
-                let unshiftExpr := Heap.HExpr.app (Heap.HExpr.app (Heap.HExpr.deferredOp "ArrayUnshift" none) objExpr) valueExpr
-                (ctx, [.cmd (.set "temp_unshift_result" unshiftExpr)])
+                -- arr.unshift(val1, val2, ...) - expand to multiple single unshift statements
+                let valueExprs := call.arguments.toList.map translate_expr
+                let statements := valueExprs.reverse.map (fun valueExpr =>
+                  let unshiftExpr := Heap.HExpr.app (Heap.HExpr.app (Heap.HExpr.deferredOp "ArrayUnshift" none) objExpr) valueExpr
+                  (.cmd (.set "temp_unshift_result" unshiftExpr) : TSStrataStatement)
+                )
+                (ctx, statements)
               | methodName =>
                 dbg_trace s!"[DEBUG] Translating method call: {methodName}(...)"
                 (ctx, [])
