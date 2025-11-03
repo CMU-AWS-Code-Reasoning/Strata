@@ -142,18 +142,6 @@ partial def translate_expr (e: TS_Expression) : Heap.HExpr :=
     -- Use deferred conditional instead of toLambda? checks
     Heap.HExpr.deferredIte guard consequent alternate
 
-  | .TS_UnaryExpression e =>
-    match e.operator with
-    | "-" =>
-      -- Numeric negation: translate as 0 - arg
-      let arg := translate_expr e.argument
-      Heap.HExpr.app (Heap.HExpr.app (Heap.HExpr.deferredOp "Int.Sub" none) (Heap.HExpr.int 0)) arg
-    | "!" =>
-      -- Logical not: use Bool.Not deferred op
-      let arg := translate_expr e.argument
-      Heap.HExpr.app (Heap.HExpr.deferredOp "Bool.Not" none) arg
-    | op => panic! s!"Unsupported unary operator: {op}"
-
   | .TS_NumericLiteral n =>
     dbg_trace s!"[DEBUG] Translating numeric literal value={n.value}, raw={n.extra.raw}, rawValue={n.extra.rawValue}"
     Heap.HExpr.int n.extra.raw.toInt!
@@ -213,6 +201,20 @@ partial def translate_expr (e: TS_Expression) : Heap.HExpr :=
     -- Use allocSimple which handles the object type automatically
     Heap.HExpr.allocSimple fields
 
+  | .TS_UnaryExpression e =>
+    let arg := translate_expr e.argument
+    match e.operator with
+    | "-" =>
+      -- Unary minus: -x
+      Heap.HExpr.app (Heap.HExpr.app (Heap.HExpr.deferredOp "Int.Sub" none) (Heap.HExpr.int 0)) arg
+    | "+" =>
+      -- Unary plus: +x (just return the argument)
+      arg
+    | "!" =>
+      -- Logical NOT: !x
+      Heap.HExpr.app (Heap.HExpr.deferredOp "Bool.Not" none) arg
+    | _ => panic! s!"Unsupported unary operator: {e.operator}"
+
   | .TS_CallExpression call =>
     match call.callee with
       | .TS_MemberExpression member =>
@@ -240,6 +242,16 @@ partial def translate_expr (e: TS_Expression) : Heap.HExpr :=
             let lengthExpr := Heap.HExpr.app (Heap.HExpr.app (Heap.HExpr.deferredOp "LengthAccess" none) objExpr) (Heap.HExpr.string "length")
             let lastIndexExpr := Heap.HExpr.app (Heap.HExpr.app (Heap.HExpr.deferredOp "Int.Sub" none) lengthExpr) (Heap.HExpr.int 1)
             Heap.HExpr.app (Heap.HExpr.app (Heap.HExpr.deferredOp "DynamicFieldAccess" none) objExpr) lastIndexExpr
+          | "shift" =>
+            -- arr.shift() - deferred operation that removes first element and reindexes
+            Heap.HExpr.app (Heap.HExpr.deferredOp "ArrayShift" none) objExpr
+          | "unshift" =>
+            -- arr.unshift(value) - single value only in expression context
+            if call.arguments.size != 1 then
+              panic! s!"unshift with multiple arguments in expression context not supported"
+            else
+              let valueExpr := translate_expr call.arguments[0]!
+              Heap.HExpr.app (Heap.HExpr.app (Heap.HExpr.deferredOp "ArrayUnshift" none) objExpr) valueExpr
           | methodName =>
             Heap.HExpr.lambda (.fvar s!"call_{methodName}" none)
         | _ =>
@@ -327,6 +339,35 @@ partial def translate_statement_core
                   let deleteExpr := Heap.HExpr.app (Heap.HExpr.app (Heap.HExpr.app (Heap.HExpr.deferredOp "FieldDelete" none) objExpr) tempIndexVar) Heap.HExpr.null
                   let deleteStmt := .cmd (.set "temp_delete_result" deleteExpr)
                   (ctx, [tempIndexInit, initStmt, deleteStmt])
+                else if methodId.name == "shift" then
+                  let objExpr := translate_expr member.object
+                  let shiftExpr := Heap.HExpr.app (Heap.HExpr.deferredOp "ArrayShift" none) objExpr
+                  let ty := infer_type_from_expr d.init
+                  (ctx, [.cmd (.init d.id.name ty shiftExpr)])
+                else if methodId.name == "unshift" then
+                  -- Handle Array.unshift() with multiple arguments
+                  let objExpr := translate_expr member.object
+                  let valueExprs := call.arguments.toList.map translate_expr
+                  if valueExprs.isEmpty then
+                    defaultInit
+                  else
+                    -- Process all unshifts in reverse order
+                    -- valueExprs = [2, 1], reverse = [1, 2]
+                    -- We want to execute: unshift(1), then unshift(2)
+                    let reversed := valueExprs.reverse
+                    let allButLast := reversed.dropLast
+                    let lastValue := reversed.getLast!
+
+                    let tempStmts := allButLast.map (fun valueExpr =>
+                      let unshiftExpr := Heap.HExpr.app (Heap.HExpr.app (Heap.HExpr.deferredOp "ArrayUnshift" none) objExpr) valueExpr
+                      (.cmd (.set "temp_unshift_result" unshiftExpr) : TSStrataStatement)
+                    )
+                    -- Last unshift assigns to the variable
+                    let lastUnshiftExpr := Heap.HExpr.app (Heap.HExpr.app (Heap.HExpr.deferredOp "ArrayUnshift" none) objExpr) lastValue
+                    let ty := Heap.HMonoTy.int
+                    let initStmt := .cmd (.init d.id.name ty lastUnshiftExpr)
+                    (ctx, tempStmts ++ [initStmt])
+
                 else
                   defaultInit
               | _ => defaultInit
@@ -337,43 +378,55 @@ partial def translate_statement_core
         match expr.expression with
         | .TS_CallExpression call =>
           match call.callee with
-            | .TS_MemberExpression member =>
-              -- Handle method calls like arr.push(x) or arr.pop()
-              let objExpr := translate_expr member.object
-              match member.property with
-              | .TS_IdExpression id =>
-                match id.name with
-                | "push" =>
-                  -- arr.push(value) - use DynamicFieldAssign
-                  let valueExpr := translate_expr call.arguments[0]!
-                  let lengthExpr := Heap.HExpr.app (Heap.HExpr.app (Heap.HExpr.deferredOp "LengthAccess" none) objExpr) (Heap.HExpr.string "length")
-                  let pushExpr := Heap.HExpr.app (Heap.HExpr.app (Heap.HExpr.app (Heap.HExpr.deferredOp "DynamicFieldAssign" none) objExpr) lengthExpr) valueExpr
-                  (ctx, [.cmd (.set "temp_push_result" pushExpr)])
-                | "pop" =>
-                  -- arr.pop() standalone - read and delete
-                  let lengthExpr := Heap.HExpr.app (Heap.HExpr.app (Heap.HExpr.deferredOp "LengthAccess" none) objExpr) (Heap.HExpr.string "length")
-                  let lastIndexExpr := Heap.HExpr.app (Heap.HExpr.app (Heap.HExpr.deferredOp "Int.Sub" none) lengthExpr) (Heap.HExpr.int 1)
-                  let tempIndexInit := .cmd (.init "temp_pop_index" Heap.HMonoTy.int lastIndexExpr)
-                  let tempIndexVar := Heap.HExpr.lambda (.fvar "temp_pop_index" none)
-                  -- Read the value
-                  let popExpr := Heap.HExpr.app (Heap.HExpr.app (Heap.HExpr.deferredOp "DynamicFieldAccess" none) objExpr) tempIndexVar
-                  let readStmt := .cmd (.set "temp_pop_result" popExpr)
-                  -- Delete the element
-                  let deleteExpr := Heap.HExpr.app (Heap.HExpr.app (Heap.HExpr.app (Heap.HExpr.deferredOp "DynamicFieldAssign" none) objExpr) tempIndexVar) Heap.HExpr.null
-                  let deleteStmt := .cmd (.set "temp_delete_result" deleteExpr)
-                  (ctx, [tempIndexInit, readStmt, deleteStmt])
-                | methodName =>
-                  dbg_trace s!"[DEBUG] Translating method call: {methodName}(...)"
-                  (ctx, [])
-              | _ => (ctx, [])
+          | .TS_MemberExpression member =>
+            -- Handle method calls like arr.push(x), arr.pop(), arr.shift(), arr.unshift(x)
+            let objExpr := translate_expr member.object
+            match member.property with
             | .TS_IdExpression id =>
-              -- Handle standalone function call
-              dbg_trace s!"[DEBUG] Translating TypeScript standalone function call: {id.name}(...)"
-              let args := call.arguments.toList.map translate_expr
-              dbg_trace s!"[DEBUG] Function call has {args.length} arguments"
-              let lhs := []  -- No left-hand side for standalone calls
-              (ctx, [.cmd (.directCall lhs id.name args)])
+              match id.name with
+              | "push" =>
+                -- arr.push(value) - use DynamicFieldAssign
+                let valueExpr := translate_expr call.arguments[0]!
+                let lengthExpr := Heap.HExpr.app (Heap.HExpr.app (Heap.HExpr.deferredOp "LengthAccess" none) objExpr) (Heap.HExpr.string "length")
+                let pushExpr := Heap.HExpr.app (Heap.HExpr.app (Heap.HExpr.app (Heap.HExpr.deferredOp "DynamicFieldAssign" none) objExpr) lengthExpr) valueExpr
+                (ctx, [.cmd (.set "temp_push_result" pushExpr)])
+              | "pop" =>
+                -- arr.pop() standalone - read and delete
+                let lengthExpr := Heap.HExpr.app (Heap.HExpr.app (Heap.HExpr.deferredOp "LengthAccess" none) objExpr) (Heap.HExpr.string "length")
+                let lastIndexExpr := Heap.HExpr.app (Heap.HExpr.app (Heap.HExpr.deferredOp "Int.Sub" none) lengthExpr) (Heap.HExpr.int 1)
+                let tempIndexInit := .cmd (.init "temp_pop_index" Heap.HMonoTy.int lastIndexExpr)
+                let tempIndexVar := Heap.HExpr.lambda (.fvar "temp_pop_index" none)
+                -- Read the value
+                let popExpr := Heap.HExpr.app (Heap.HExpr.app (Heap.HExpr.deferredOp "DynamicFieldAccess" none) objExpr) tempIndexVar
+                let readStmt := .cmd (.set "temp_pop_result" popExpr)
+                -- Delete the element
+                let deleteExpr := Heap.HExpr.app (Heap.HExpr.app (Heap.HExpr.deferredOp "FieldDelete" none) objExpr) tempIndexVar
+                let deleteStmt := .cmd (.set "temp_delete_result" deleteExpr)
+                (ctx, [tempIndexInit, readStmt, deleteStmt])
+              | "shift" =>
+                -- arr.shift() standalone
+                let shiftExpr := Heap.HExpr.app (Heap.HExpr.deferredOp "ArrayShift" none) objExpr
+                (ctx, [.cmd (.set "temp_shift_result" shiftExpr)])
+              | "unshift" =>
+                -- arr.unshift(val1, val2, ...) - expand to multiple single unshift statements
+                let valueExprs := call.arguments.toList.map translate_expr
+                let statements := valueExprs.reverse.map (fun valueExpr =>
+                  let unshiftExpr := Heap.HExpr.app (Heap.HExpr.app (Heap.HExpr.deferredOp "ArrayUnshift" none) objExpr) valueExpr
+                  (.cmd (.set "temp_unshift_result" unshiftExpr) : TSStrataStatement)
+                )
+                (ctx, statements)
+              | methodName =>
+                dbg_trace s!"[DEBUG] Translating method call: {methodName}(...)"
+                (ctx, [])
             | _ => (ctx, [])
+          | .TS_IdExpression id =>
+            -- Handle standalone function call
+            dbg_trace s!"[DEBUG] Translating TypeScript standalone function call: {id.name}(...)"
+            let args := call.arguments.toList.map translate_expr
+            dbg_trace s!"[DEBUG] Function call has {args.length} arguments"
+            let lhs := []  -- No left-hand side for standalone calls
+            (ctx, [.cmd (.directCall lhs id.name args)])
+          | _ => (ctx, [])
         | .TS_AssignmentExpression assgn =>
           assert! assgn.operator == "="
           match assgn.left with
