@@ -609,7 +609,7 @@ partial def translate_statement_core
               -- Regular case
               let discrimExpr := translate_expr switchStmt.discriminant
               let caseValue := translate_expr expr
-              let testExpr := Heap.HExpr.app (Heap.HExpr.app (Heap.HExpr.deferredOp "Int.Eq" none) discrimExpr) caseValue
+              let testExpr := Heap.HExpr.deferredEq discrimExpr caseValue
               let (caseCtx, stmts) := case.consequent.foldl (fun (accCtx, accStmts) stmt =>
                 let (newCtx, newStmts) := translate_statement_core stmt accCtx
                 (newCtx, accStmts ++ newStmts)) (ctx, [])
