@@ -263,6 +263,13 @@ partial def translate_expr (e: TS_Expression) : Heap.HExpr :=
               argExprs.foldl (fun acc argExpr =>
                 Heap.HExpr.app (Heap.HExpr.app (Heap.HExpr.deferredOp "ArrayConcat" none) acc) argExpr
               ) objExpr
+          | "join" =>
+            -- arr.join(separator?) - join elements into a string
+            let separator :=
+              match call.arguments[0]? with
+              | some sepExpr => translate_expr sepExpr
+              | none => Heap.HExpr.string ","
+            Heap.HExpr.app (Heap.HExpr.app (Heap.HExpr.deferredOp "ArrayJoin" none) objExpr) separator
           | methodName =>
             Heap.HExpr.lambda (.fvar s!"call_{methodName}" none)
         | _ =>
