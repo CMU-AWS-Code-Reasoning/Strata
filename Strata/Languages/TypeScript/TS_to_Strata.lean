@@ -223,6 +223,15 @@ partial def translate_expr (e: TS_Expression) : Heap.HExpr :=
         match member.property with
         | .TS_IdExpression id =>
           match id.name with
+          | "slice" =>
+            -- arr.slice(start?, end?) - return a new array (deferred op)
+            let startArg := match call.arguments[0]? with
+              | some a => translate_expr a
+              | none => Heap.HExpr.null
+            let endArg := match call.arguments[1]? with
+              | some a => translate_expr a
+              | none => Heap.HExpr.null
+            Heap.HExpr.app (Heap.HExpr.app (Heap.HExpr.app (Heap.HExpr.deferredOp "ArraySlice" none) objExpr) startArg) endArg
           | "push" =>
             -- arr.push(value) - use DynamicFieldAssign with length as index
             let valueExpr := translate_expr call.arguments[0]!
@@ -346,11 +355,6 @@ partial def translate_statement_core
                   let shiftExpr := Heap.HExpr.app (Heap.HExpr.deferredOp "ArrayShift" none) objExpr
                   let ty := infer_type_from_expr d.init
                   (ctx, [.cmd (.init d.id.name ty shiftExpr)])
-                else if methodId.name == "shift" then
-                   let objExpr := translate_expr member.object
-                   let shiftExpr := Heap.HExpr.app (Heap.HExpr.deferredOp "ArrayShift" none) objExpr
-                   let ty := infer_type_from_expr d.init
-                   (ctx, [.cmd (.init d.id.name ty shiftExpr)])
                 else if methodId.name == "unshift" then
                   -- Handle Array.unshift() with multiple arguments
                   let objExpr := translate_expr member.object
