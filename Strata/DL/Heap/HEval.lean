@@ -189,6 +189,18 @@ partial def evalApp (state : HState) (originalExpr e1 e2 : HExpr) : HState × HE
     -- Third application: we have obj, start, and end -> evaluate
     evalArraySlice state2 objExpr startExpr e2'
 
+  | .deferredOp "ArrayConcat" _ =>
+    -- First application to ArrayConcat - return partially applied
+    (state2, .app (.deferredOp "ArrayConcat" none) e2')
+  | .app (.deferredOp "ArrayConcat" _) arr1Expr =>
+    -- Second application to ArrayConcat - now we can evaluate
+    evalArrayConcat state2 arr1Expr e2'
+  | .deferredOp "ArrayJoin" _ =>
+    -- First application to ArrayJoin - return partially applied
+    (state2, .app (.deferredOp "ArrayJoin" none) e2')
+  | .app (.deferredOp "ArrayJoin" _) arrExpr =>
+    -- Second application to ArrayJoin - now we can evaluate
+    evalArrayJoin state2 arrExpr e2'
   | .deferredOp op _ =>
     -- First application to a deferred operation - return partially applied
     (state2, .app (.deferredOp op none) e2')
@@ -406,6 +418,84 @@ partial def evalArrayUnshift (state : HState) (objExpr valueExpr : HExpr) : HSta
     -- Evaluate object expression first
     let (state1, objVal) := evalHExpr state objExpr
     evalArrayUnshift state1 objVal valueExpr
+
+-- Handle array concat: arr1.concat(arr2) - concatenates two arrays, returns new array
+partial def evalArrayConcat (state : HState) (arr1Expr arr2Expr : HExpr) : HState × HExpr :=
+  -- First evaluate both array expressions to get addresses
+  let (state1, arr1Val) := evalHExpr state arr1Expr
+  let (state2, arr2Val) := evalHExpr state1 arr2Expr
+
+  match arr1Val, arr2Val with
+  | .address addr1, .address addr2 =>
+    match state2.getObject addr1, state2.getObject addr2 with
+    | some obj1, some obj2 =>
+      -- Get all fields from arr1
+      let arr1Fields := obj1.toList
+
+      -- Calculate the length of arr1 (highest index + 1)
+      let arr1Length := if arr1Fields.isEmpty then 0 else
+        (arr1Fields.map (·.1)).foldl Nat.max 0 + 1
+
+      -- Get all fields from arr2 and shift their indices by arr1Length
+      let arr2Fields := obj2.toList.map fun (idx, value) => (idx + arr1Length, value)
+
+      -- Combine all fields: arr1's fields followed by shifted arr2's fields
+      let combinedFields := arr1Fields ++ arr2Fields
+
+      -- Allocate a new array with the combined fields
+      let (newState, newAddr) := state2.alloc combinedFields
+
+      (newState, .address newAddr)
+    | _, _ => (state2, .lambda (LExpr.const "error_invalid_address" none))
+  | _, _ =>
+    -- One or both expressions didn't evaluate to addresses
+    (state2, .lambda (LExpr.const "error_invalid_array_for_concat" none))
+
+-- Handle array join: arr.join(separator?) - joins elements into a string
+partial def evalArrayJoin (state : HState) (arrExpr sepExpr : HExpr) : HState × HExpr :=
+  let (state1, arrVal) := evalHExpr state arrExpr
+  let (state2, sepVal) := evalHExpr state1 sepExpr
+  let formatToString : Std.Format → String := fun fmt => fmt.pretty 80
+  let separator : String :=
+    match sepVal with
+    | .null => ","
+    | .lambda (LExpr.const s _) => s
+    | _ =>
+      match sepVal.toLambda? with
+      | some (LExpr.const s _) => s
+      | _ => formatToString (repr sepVal)
+  match arrVal with
+  | .address addr =>
+    match state2.getObject addr with
+    | some _ =>
+      let len := state2.getArrayLength addr
+      let stringOf : HExpr → String := fun value =>
+        match value with
+        | .lambda (LExpr.const s _) => s
+        | .lambda _ => formatToString (repr value)
+        | .address _ => "[object Object]"
+        | .null => ""
+        | _ => formatToString (repr value)
+      let rec collect (idx : Nat) (st : HState) (acc : List String) : HState × List String :=
+        if idx ≥ len then (st, acc.reverse)
+        else
+          match st.getField addr idx with
+          | some rawVal =>
+            let (st1, evaluated) := evalHExpr st rawVal
+            let str := stringOf evaluated
+            collect (idx + 1) st1 (str :: acc)
+          | none =>
+            -- Sparse slot - treated as empty string but still contributes separator
+            collect (idx + 1) st ("" :: acc)
+      let (stateFinal, parts) := collect 0 state2 []
+      let resultString :=
+        match parts with
+        | [] => ""
+        | _ => String.intercalate separator parts
+      (stateFinal, Heap.HExpr.string resultString)
+    | none => (state2, .lambda (LExpr.const "error_invalid_address" none))
+  | _ =>
+    (state2, .lambda (LExpr.const "error_invalid_array_for_join" none))
 
 partial def extractFieldIndex (expr : HExpr) : Option Nat :=
   match expr with
