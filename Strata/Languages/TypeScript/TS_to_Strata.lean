@@ -75,6 +75,7 @@ def Option_TS_TSTypeKeyword_to_str (i: Option TS_TSTypeKeyword) : String :=
     | .TS_TSBooleanKeyword _ => "TS_TSBooleanKeyword"
     | .TS_TSStringKeyword _ => "TS_TSStringKeyword"
     | .TS_TSArrayType _ => "TS_TSArrayType"
+    | .TS_TSTypeLiteral _ => "TS_TSTypeLiteral"
   | .none => panic! "Unimplemented"
 
 -- Helper to extract type from optional type annotation
