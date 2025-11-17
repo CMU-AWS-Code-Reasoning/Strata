@@ -202,10 +202,13 @@ partial def translate_expr (e: TS_Expression) : Heap.HExpr :=
               let idx := Float.floor numLit.value |>.toUInt64.toNat
               ((idx, v) :: ns, ds)
           | .TS_StringLiteral strLit =>
-              -- unify: string-literal key becomes a constant string expression
+              -- string-literal key becomes a constant string expression
               (ns, (Heap.HExpr.string strLit.value, v) :: ds)
+          | .TS_IdExpression id =>
+              -- non-computed identifier key like { name: ... } becomes field "name"
+              (ns, (Heap.HExpr.string id.name, v) :: ds)
           | other =>
-              -- computed or identifier: translate to an expr
+              -- computed key: use the translated expression as dynamic key
               (ns, (translate_expr other, v) :: ds))
         ([], [])
 
